@@ -8,3 +8,6 @@ dashboard/config/devices.conf
 .DS_Store
 .idea/
 .vscode/
+
+# Private machine-specific operations. Its own repository, cloned here.
+opts/
