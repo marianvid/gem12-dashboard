@@ -81,7 +81,7 @@ and licenses are recorded in [THIRD_PARTY.md](THIRD_PARTY.md).
 - Persistent, low-latency tap/hold input through a patched libfprint driver.
 - Guarded physical power-button menu with explicit confirmation and timeout.
 - Reproducible build from pinned upstream commits; no universal installer.
-- Simulator fixtures and distribution smoke tests.
+- Simulator fixtures, distribution smoke tests and a live sensor-refresh test.
 
 ## Interaction
 

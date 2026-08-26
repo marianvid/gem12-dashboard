@@ -39,4 +39,6 @@ if [ "${status:-0}" -ne 0 ] && [ "${status:-0}" -ne 124 ]; then
     exit "$status"
 fi
 find "$capture_dir/out" -type f -name '*.png' -print -quit | grep -q .
+"$root_dir/scripts/test-dynamic-refresh.sh" \
+    "$dist_dir/bin/asterctl" "$dist_dir/share/home-lab/dashboard.json"
 echo "Distribution smoke test passed."

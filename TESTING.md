@@ -1,5 +1,23 @@
 # Test record
 
+## Dynamic sensor refresh — passed
+
+- Date: 2026-08-26
+- Host: AOOSTAR GEM12+ Pro reference system
+
+Verified that an atomic sensor-file update produces a different rendered frame
+while `asterctl` remains running. On the live installation, CPU usage, CPU
+frequency, memory and low-volume network traffic changed between samples;
+Proxmox inventory remained correct and refreshed independently. Both dashboard
+services remained active with zero restarts and no warning-level journal
+entries. The external rotating disk continued to report `SLEEP`; its guarded
+SMART policy was not changed.
+
+The Health Services card reports the dynamic combined VM/container inventory.
+Its health state separately checks four permanent PVE services plus six
+permanent Home-Lab services. The boot-only `aoostar-startup-status` oneshot is
+deliberately excluded from that core-service inventory.
+
 ## Clean build — passed
 
 - Date: 2026-08-05

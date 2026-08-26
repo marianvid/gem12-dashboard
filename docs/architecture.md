@@ -9,6 +9,13 @@ separate:
 4. A persistent MAFP helper turns touch duration into tap/hold triggers.
 5. A power-event helper opens the guarded System Actions modal.
 
+Fast host metrics are published roughly once per second. Event-like Proxmox
+inventory is refreshed asynchronously every five seconds so slow `qm`, `pct`
+or `pvesm` calls cannot stall CPU, memory and network updates. NVMe SMART data
+keeps its slower cache interval. The external rotating disk retains its guarded
+policy: SMART is refreshed only after block activity proves the disk is already
+awake.
+
 Top-level panels are Health, Compute, optional GPU, Storage, Network and
 Services. Child panels use `Parent > Child` names, allowing navigation to
 discover them without hard-coded panel counts. Missing removable disks are

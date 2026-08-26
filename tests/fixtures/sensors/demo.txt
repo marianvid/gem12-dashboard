@@ -13,7 +13,7 @@ lab_health_network_summary: LINK 2.5G · ONLINE
 lab_health_services_ok: ✓
 lab_health_services_warning:
 lab_health_services_critical:
-lab_health_services_summary: PVE 4/4 · LAB 5/5
+lab_health_services_summary: GUESTS 4/5 · CORE 10/10
 lab_cpu_temp: 51
 lab_cpu_usage: 14
 lab_mem_percent: 18
@@ -87,12 +87,14 @@ lab_ip: 192.0.2.10
 lab_link: 2500 Mb/s
 lab_net_down: 84.2
 lab_net_up: 12.8
+lab_net_down_display: 84.20 Mb/s
+lab_net_up_display: 12.80 Mb/s
 lab_iface: vmbr0
 lab_gateway: 192.0.2.1
 lab_rx_total: 1.2 TiB
 lab_tx_total: 340 GiB
 lab_pve_services: 4/4
-lab_lab_services: 5/5
+lab_lab_services: 6/6
 lab_vm_state: 1/2
 lab_ct_state: 3/3
 lab_storage_state: 3/3 OK

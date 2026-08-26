@@ -14,6 +14,7 @@ external_mount=${HOME_LAB_EXTERNAL_MOUNT:-/mnt/pve/media4tb}
 run_dir=/run/aoostar-display
 out_file="$run_dir/lab.txt"
 state_file="$run_dir/network.state"
+pve_cache_file="$run_dir/pve-inventory.state"
 smart_cache_dir=/run/aoostar-smart-cache
 persistent_smart_cache_dir=/var/lib/aoostar-display/smart-cache
 mkdir -p "$run_dir"
@@ -122,6 +123,41 @@ format_capacity_pair() {
     }'
 }
 
+format_network_rate() {
+    awk -v bytes="$1" -v seconds="$2" 'BEGIN {
+        if (seconds <= 0) { print "0 KB/s"; exit }
+        bytes_per_second = bytes / seconds
+        if (bytes_per_second < 1000000)
+            printf "%.0f KB/s", bytes_per_second / 1000
+        else
+            printf "%.2f Mb/s", bytes_per_second * 8 / 1000000
+    }'
+}
+
+collect_pve_inventory() {
+    qm_snapshot=$(qm list 2>/dev/null || true)
+    pct_snapshot=$(pct list 2>/dev/null || true)
+    pvesm_snapshot=$(pvesm status 2>/dev/null || true)
+
+    vm_total=$(printf '%s\n' "$qm_snapshot" | awk 'NR>1 {n++} END {print n+0}')
+    vm_running=$(printf '%s\n' "$qm_snapshot" | awk 'NR>1 && $3=="running" {n++} END {print n+0}')
+    ct_total=$(printf '%s\n' "$pct_snapshot" | awk 'NR>1 {n++} END {print n+0}')
+    ct_running=$(printf '%s\n' "$pct_snapshot" | awk 'NR>1 && $2=="running" {n++} END {print n+0}')
+    storage_total=$(printf '%s\n' "$pvesm_snapshot" | awk 'NR>1 {n++} END {print n+0}')
+    storage_active=$(printf '%s\n' "$pvesm_snapshot" | awk 'NR>1 && $3=="active" {n++} END {print n+0}')
+    guests=$( {
+        printf '%s\n' "$qm_snapshot" | awk 'NR>1 && $3=="running" {print $1}'
+        printf '%s\n' "$pct_snapshot" | awk 'NR>1 && $2=="running" {print $1}'
+    } | paste -sd, -)
+    [ -n "$guests" ] || guests=none
+
+    pve_tmp="$pve_cache_file.$BASHPID.tmp"
+    printf '%s|%s|%s|%s|%s|%s|%s\n' \
+        "$vm_running" "$vm_total" "$ct_running" "$ct_total" \
+        "$storage_active" "$storage_total" "$guests" > "$pve_tmp"
+    mv "$pve_tmp" "$pve_cache_file"
+}
+
 storage_model_label() {
     device=$1
     cache=$2
@@ -150,21 +186,35 @@ assign_health_tokens() {
     esac
 }
 
+pve_refresh_pid=""
+nvidia_xid=0
+nvidia_xid_checked=0
+cached_nvidia_cuda=N/A
+nvidia_cuda_checked=0
+
+# Populate event-like Proxmox state once before the fast metrics loop. Later
+# refreshes run in the background so a slow `qm`, `pct` or `pvesm` call cannot
+# stall CPU, memory and network updates.
+collect_pve_inventory
+
 while true; do
     now=$(date +%s)
     iface=$(ip route show default 2>/dev/null | awk 'NR==1 {print $5}')
     [ -n "$iface" ] || iface=vmbr0
     rx=$(cat "/sys/class/net/$iface/statistics/rx_bytes" 2>/dev/null || echo 0)
     tx=$(cat "/sys/class/net/$iface/statistics/tx_bytes" 2>/dev/null || echo 0)
-    down=0; up=0
+    down=0; up=0; rx_delta=0; tx_delta=0; dt=0
     if [ -r "$state_file" ]; then
         read -r old_now old_rx old_tx < "$state_file" || true
         dt=$((now-old_now))
         if [ "$dt" -gt 0 ] && [ "$rx" -ge "$old_rx" ] && [ "$tx" -ge "$old_tx" ]; then
-            down=$(awk -v n="$((rx-old_rx))" -v d="$dt" 'BEGIN {printf "%.1f", n*8/d/1000000}')
-            up=$(awk -v n="$((tx-old_tx))" -v d="$dt" 'BEGIN {printf "%.1f", n*8/d/1000000}')
+            rx_delta=$((rx-old_rx)); tx_delta=$((tx-old_tx))
+            down=$(awk -v n="$rx_delta" -v d="$dt" 'BEGIN {printf "%.2f", n*8/d/1000000}')
+            up=$(awk -v n="$tx_delta" -v d="$dt" 'BEGIN {printf "%.2f", n*8/d/1000000}')
         fi
     fi
+    down_display=$(format_network_rate "$rx_delta" "$dt")
+    up_display=$(format_network_rate "$tx_delta" "$dt")
     printf '%s %s %s\n' "$now" "$rx" "$tx" > "$state_file"
 
     read -r _ u1 n1 s1 i1 w1 irq1 si1 st1 _ < /proc/stat
@@ -173,17 +223,23 @@ while true; do
     read -r _ u2 n2 s2 i2 w2 irq2 si2 st2 _ < /proc/stat
     total2=$((u2+n2+s2+i2+w2+irq2+si2+st2)); idle2=$((i2+w2))
     delta=$((total2-total1)); idle_delta=$((idle2-idle1))
-    if [ "$delta" -gt 0 ]; then cpu=$((100*(delta-idle_delta)/delta)); else cpu=0; fi
+    if [ "$delta" -gt 0 ]; then
+        cpu=$(awk -v busy="$((delta-idle_delta))" -v total="$delta" 'BEGIN {printf "%.1f", 100*busy/total}')
+    else
+        cpu=0.0
+    fi
 
-    vm_total=$(qm list 2>/dev/null | awk 'NR>1 {n++} END {print n+0}')
-    vm_running=$(qm list 2>/dev/null | awk 'NR>1 && $3=="running" {n++} END {print n+0}')
-    ct_total=$(pct list 2>/dev/null | awk 'NR>1 {n++} END {print n+0}')
-    ct_running=$(pct list 2>/dev/null | awk 'NR>1 && $2=="running" {n++} END {print n+0}')
-    storage_total=$(pvesm status 2>/dev/null | awk 'NR>1 {n++} END {print n+0}')
-    storage_active=$(pvesm status 2>/dev/null | awk 'NR>1 && $3=="active" {n++} END {print n+0}')
+    if [ -n "$pve_refresh_pid" ] && ! kill -0 "$pve_refresh_pid" 2>/dev/null; then
+        wait "$pve_refresh_pid" 2>/dev/null || true
+        pve_refresh_pid=""
+    fi
+    pve_cache_time=$(stat -c %Y "$pve_cache_file" 2>/dev/null || echo 0)
+    if [ -z "$pve_refresh_pid" ] && [ $((now-pve_cache_time)) -ge 5 ]; then
+        collect_pve_inventory &
+        pve_refresh_pid=$!
+    fi
+    IFS='|' read -r vm_running vm_total ct_running ct_total storage_active storage_total guests < "$pve_cache_file" || true
     storage_detected=$(lsblk -dn -o TYPE 2>/dev/null | awk '$1=="disk" {n++} END {print n+0}')
-    guests=$( { qm list 2>/dev/null | awk 'NR>1 && $3=="running" {print $1}'; pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}'; } | paste -sd, -)
-    [ -n "$guests" ] || guests="none"
     power_transition_status=$(cat "$run_dir/power-transition-status" 2>/dev/null || true)
     startup_status=$(cat "$run_dir/startup-status" 2>/dev/null || true)
 
@@ -201,17 +257,17 @@ while true; do
     cpu_freq=$(awk '{sum+=$1; n++} END {if(n) printf "%.2f", sum/n/1000000; else print "N/A"}' /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq 2>/dev/null)
     gpu_temp=$(value_from_sysinfo temperature_gpu); gpu_temp=${gpu_temp:-N/A}
     memory_temp=$(value_from_sysinfo temperature_memory); memory_temp=${memory_temp:-N/A}
-    mem_percent=$(awk '/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} END {if(t) printf "%.0f", (t-a)*100/t; else print 0}' /proc/meminfo)
+    mem_percent=$(awk '/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} END {if(t) printf "%.1f", (t-a)*100/t; else print "0.0"}' /proc/meminfo)
     swap_percent=$(awk '/SwapTotal:/ {t=$2} /SwapFree:/ {f=$2} END {if(t) printf "%.1f", (t-f)*100/t; else print 0}' /proc/meminfo)
     load_one=$(awk '{print $1}' /proc/loadavg)
 
     nvidia_present=0
     nvidia_name=""; nvidia_temp="N/A"; nvidia_util="N/A"; nvidia_vram="N/A"
-    nvidia_power="N/A"; nvidia_fan="N/A"; nvidia_driver="N/A"; nvidia_cuda="N/A"
+    nvidia_power="N/A"; nvidia_fan="N/A"; nvidia_driver="N/A"; nvidia_cuda="$cached_nvidia_cuda"
     nvidia_pstate="N/A"; nvidia_clock="N/A"; nvidia_mem_clock="N/A"
     nvidia_persistence="N/A"; nvidia_ecc="N/A"; nvidia_uuid="N/A"
     nvidia_pci="N/A"; nvidia_process="IDLE"; nvidia_process_vram="0 MiB"
-    nvidia_dcgm="N/A"; nvidia_xid=0; nvidia_health=ok
+    nvidia_dcgm="N/A"; nvidia_health=ok
     nvidia_snapshot=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         nvidia_snapshot=$(nvidia-smi \
@@ -233,7 +289,12 @@ while true; do
         fi
         nvidia_fan=${nvidia_fields[7]:-N/A}
         nvidia_driver=${nvidia_fields[8]:-N/A}
-        nvidia_cuda=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA UMD Version: \([0-9.]*\).*/\1/p' | head -n1); nvidia_cuda=${nvidia_cuda:-N/A}
+        if [ $((now-nvidia_cuda_checked)) -ge 60 ]; then
+            cached_nvidia_cuda=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA UMD Version: \([0-9.]*\).*/\1/p' | head -n1)
+            cached_nvidia_cuda=${cached_nvidia_cuda:-N/A}
+            nvidia_cuda_checked=$now
+        fi
+        nvidia_cuda=$cached_nvidia_cuda
         nvidia_pstate=${nvidia_fields[9]:-N/A}
         nvidia_clock=${nvidia_fields[10]:-N/A}
         nvidia_mem_clock=${nvidia_fields[11]:-N/A}
@@ -248,15 +309,21 @@ while true; do
             nvidia_process_vram="$(printf '%s' "$nvidia_process_line" | cut -d, -f2 | tr -d ' ') MiB"
         fi
         systemctl is-active --quiet nvidia-dcgm.service && nvidia_dcgm=OK || nvidia_dcgm=DOWN
-        nvidia_xid=$(journalctl -k -b --no-pager 2>/dev/null | grep -c 'NVRM: Xid' || true)
+        if [ $((now-nvidia_xid_checked)) -ge 60 ]; then
+            nvidia_xid=$(journalctl -k -b --no-pager 2>/dev/null | grep -c 'NVRM: Xid' || true)
+            nvidia_xid_checked=$now
+        fi
         [ "$nvidia_dcgm" = OK ] || nvidia_health=critical
         [ "$nvidia_xid" -eq 0 ] || nvidia_health=critical
         [ "${nvidia_temp%.*}" -ge 88 ] 2>/dev/null && nvidia_health=critical
         [ "${nvidia_temp%.*}" -ge 80 ] 2>/dev/null && [ "$nvidia_health" = ok ] && nvidia_health=warning
     fi
+    # `temperature_gpu` is the integrated GPU on this host. The generic
+    # Compute panel should report the primary accelerator when NVIDIA exists.
+    [ "$nvidia_present" -eq 1 ] && gpu_temp=$nvidia_temp
 
     pve_services="pveproxy pvedaemon pvestatd pve-cluster"
-    lab_services="aoostar-display aoostar-lab-sensors mafp-next-panel aoostar-power-button aoostar-health-monitor"
+    lab_services="aoostar-display aoostar-sysinfo aoostar-lab-sensors mafp-next-panel aoostar-power-button aoostar-health-monitor"
     pve_service_total=0; pve_service_active=0
     for service in $pve_services; do
         pve_service_total=$((pve_service_total+1))
@@ -428,8 +495,9 @@ EOF
         [ "${cpu_temp_now%.*}" -ge 90 ] 2>/dev/null && compute_health=critical
         [ "${cpu_temp_now%.*}" -ge 80 ] 2>/dev/null && [ "$compute_health" = ok ] && compute_health=warning
     fi
-    [ "$mem_percent" -ge 95 ] 2>/dev/null && compute_health=critical
-    [ "$mem_percent" -ge 85 ] 2>/dev/null && [ "$compute_health" = ok ] && compute_health=warning
+    mem_percent_whole=${mem_percent%.*}
+    [ "$mem_percent_whole" -ge 95 ] 2>/dev/null && compute_health=critical
+    [ "$mem_percent_whole" -ge 85 ] 2>/dev/null && [ "$compute_health" = ok ] && compute_health=warning
     [ "$nvidia_present" -eq 1 ] && [ "$nvidia_health" = warning ] && [ "$compute_health" = ok ] && compute_health=warning
     [ "$nvidia_present" -eq 1 ] && [ "$nvidia_health" = critical ] && compute_health=critical
 
@@ -453,6 +521,10 @@ EOF
     [ "$pve_service_active" -eq "$pve_service_total" ] || services_health=critical
     [ "$lab_service_active" -eq "$lab_service_total" ] || services_health=critical
     [ "$failed_units" -eq 0 ] || [ "$services_health" = critical ] || services_health=warning
+    guest_running=$((vm_running+ct_running))
+    guest_total=$((vm_total+ct_total))
+    core_service_active=$((pve_service_active+lab_service_active))
+    core_service_total=$((pve_service_total+lab_service_total))
 
     assign_health_tokens compute "$compute_health"
     assign_health_tokens storage "$storage_health"
@@ -580,11 +652,11 @@ EOF
         echo "lab_health_network_ok: ${network_ok/ OK/}"
         echo "lab_health_network_warning: $network_warning"
         echo "lab_health_network_critical: $network_critical"
-        echo "lab_health_network_summary: ↓ $down · ↑ $up Mb/s"
+        echo "lab_health_network_summary: ↓ $down_display · ↑ $up_display"
         echo "lab_health_services_ok: ${services_ok/ OK/}"
         echo "lab_health_services_warning: $services_warning"
         echo "lab_health_services_critical: $services_critical"
-        echo "lab_health_services_summary: PVE $pve_service_active/$pve_service_total · LAB $lab_service_active/$lab_service_total"
+        echo "lab_health_services_summary: GUESTS $guest_running/$guest_total · CORE $core_service_active/$core_service_total"
         echo "lab_lexar_temp: $lexar_temp"
         echo "lab_lexar_used: $lexar_used"
         echo "lab_lexar_smart: $lexar_smart"
@@ -679,6 +751,8 @@ EOF
         echo "lab_ip: $ip_addr"
         echo "lab_net_down: $down"
         echo "lab_net_up: $up"
+        echo "lab_net_down_display: $down_display"
+        echo "lab_net_up_display: $up_display"
         echo "lab_iface: $iface"
         echo "lab_link: ${speed} Mb/s"
         echo "lab_traffic_total: $total_traffic"
