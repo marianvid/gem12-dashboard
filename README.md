@@ -1,4 +1,4 @@
-# DASHBOARD
+# HOME-LAB
 
 An interactive Linux/Proxmox dashboard for the built-in LCD and fingerprint
 sensor of the AOOSTAR GEM12+ Pro mini PC.
@@ -9,7 +9,7 @@ sensor of the AOOSTAR GEM12+ Pro mini PC.
 > risk.** Read [DISCLAIMER.md](DISCLAIMER.md) before building or deploying it.
 
 > [!NOTE]
-> DASHBOARD is a disclosed **human–AI collaborative creation**. Product intent,
+> HOME LAB is a disclosed **human–AI collaborative creation**. Product intent,
 > interaction design and real-device validation are human-led; implementation
 > and documentation were developed with AI assistance and human review. See
 > [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
@@ -22,7 +22,7 @@ details/back—and does not extract or store biometric templates.
 
 ## Origin and acknowledgements
 
-DASHBORD builds on [`aoostar-rs`](https://github.com/zehnm/aoostar-rs), created
+HOME-LAB builds on [`aoostar-rs`](https://github.com/zehnm/aoostar-rs), created
 by [Markus Zehnder (`@zehnm`)](https://github.com/zehnm). His reverse
 engineering of the undocumented AOOSTAR display protocol and Rust
 implementation made Linux control of the GEM12+ Pro LCD possible. This project
